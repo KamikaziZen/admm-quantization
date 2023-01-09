@@ -241,7 +241,7 @@ def calibrate(model, dataset_loader, device='cuda', num_batches=1000):
             m.train()
 
     batch_idx = 0
-    for (x, y) in tqdm(dataset_loader):
+    for (x, _) in tqdm(dataset_loader):
         if batch_idx >= num_batches:
             break
 
