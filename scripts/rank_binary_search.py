@@ -1,6 +1,3 @@
-import sys
-print(sys.path)
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,17 +19,17 @@ from tqdm.notebook import tqdm
 
 from source.data import get_imagenet_train_val_loaders, get_imagenet_test_loader
 from source.eval import accuracy, estimate_macs
-from source.utils import get_layer_by_name, batchnorm_callibration
+from source.utils import get_layer_by_name, bncalibrate_layer
 
 from argparse import ArgumentParser
+import logging
+logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.INFO)
 
 
-seed = 42
-torch.manual_seed(seed)
-np.random.seed(seed)
-random.seed(seed)
-
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+def set_seed(seed):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
 
 
 def run_name(args):
@@ -77,8 +74,20 @@ def parse_args():
     parser.add_argument("--start_reduction_rate",
                         required=False, 
                         type=int,
-                        default=4,
-                        help="Reduction rate from which to start binary search")
+                        help="Reduction rate from which to start binary search.")
+    parser.add_argument("--min_rank",
+                        required=False, 
+                        type=int,
+                        help="Minimum rank to start binary search.")
+    parser.add_argument("--max_rank",
+                        required=False, 
+                        type=int,
+                        help="Maximum rank to start binary search.")
+    parser.add_argument("--seed",
+                        required=False, 
+                        type=int,
+                        default=42,
+                        help="Random seed.")
 
     args = parser.parse_args()
     # Sanity Check
@@ -131,13 +140,12 @@ def find_best_rank_for_layer(model, lname, decomposition, train_loader, val_load
     ch_ratio = init_layer.in_channels / init_layer.out_channels
     
     if curr_max < curr_min:
-        print("Layer can not be compressed with given grid step")
-
+        logging.error("Layer can not be compressed with given grid step")
     for i in range(n):
-        print("Search iter {}: ranks (min, curr, max): ({}, {}, {})".format(i, curr_min, curr_rank, 
+        logging.info("Search iter {}: ranks (min, curr, max): ({}, {}, {})".format(i, curr_min, curr_rank, 
                                                                             curr_max))
 
-        print("-------------------------\n Compression step")
+        logging.info("-------------------------\n Compression step")
         
         manual_rank = (int(curr_rank * ch_ratio), curr_rank) if decomposition=='tucker2' else curr_rank
         
@@ -156,18 +164,18 @@ def find_best_rank_for_layer(model, lname, decomposition, train_loader, val_load
                                )
         compressor.compression_step()
 
-        print("-------------------------\n Calibration step")
+        logging.info("-------------------------\n Calibration step")
         # calibrate batch norm statistics
 
         compressor.compressed_model.to(device)
         bn_cal_func(compressor.compressed_model, train_loader, layer_name=lname,
                     n_batches=bn_cal_n_iters, device=device)
 
-        print("-------------------------\n Test step")
+        logging.info("-------------------------\n Test step")
 
         # eval model
         score = eval_func(compressor.compressed_model, val_loader, device=device)
-        print('Current score: {}'.format(score))
+        logging.info('Current score: {}'.format(score))
 
         # clear memory
         del compressor
@@ -177,7 +185,7 @@ def find_best_rank_for_layer(model, lname, decomposition, train_loader, val_load
         if score + score_eps < score_init:
 
             if i == 0:
-                print("Bad layer to compress")
+                logging.error("Bad layer to compress")
                 if nx > 1:
                     best_rank = curr_rank
                 break
@@ -197,7 +205,13 @@ def find_best_rank_for_layer(model, lname, decomposition, train_loader, val_load
 
     
 def main():
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    logging.info(f'Running on: {device}')
+    
+    
     args = parse_args()
+    set_seed(args.seed)
+    logging.info(f'Args: {args}')
     
     if args.with_wandb:
         import wandb
@@ -215,7 +229,7 @@ def main():
                                                               pin_memory=True,
                                                               val_perc=0.04,
                                                               shuffle=True,
-                                                              random_seed=seed)
+                                                              random_seed=args.seed)
     test_loader = get_imagenet_test_loader(data_root=args.data_root, 
                                            batch_size=args.batch_size,
                                            num_workers=args.num_workers,
@@ -231,18 +245,20 @@ def main():
 
     for lname in lnames_to_compress:
         layer_shape = get_layer_by_name(model, lname).weight.shape
-        print('Layer:', lname)
-        print('Shape:', layer_shape)
-        rank = estimate_rank_for_compression_rate(layer_shape, rate=args.start_reduction_rate,
-                                                  tensor_format='cp3')
-        print('Rank:', rank)
-        print()
-        max_ranks[lname] = rank
+        if args.max_rank:
+            max_ranks[lname] = args.max_rank
+        else:
+            max_ranks[lname] = estimate_rank_for_compression_rate(layer_shape, 
+                                                                  rate=args.start_reduction_rate,
+                                                                  tensor_format='cp3')
 
     saved_ranks = {k: None for k in all_lnames}
-    min_ranks = {k: 10 for k in max_ranks.keys()}
+    min_ranks = {k: args.min_rank or 10 for k in max_ranks.keys()}
     curr_ranks = copy.deepcopy(max_ranks)
     
+    logging.info(f'Layer: {args.lname}')
+    logging.info(f'Decomposition: {args.decomposition}')
+    logging.info(f'Eps: {args.eps}')
     
     best_rank = find_best_rank_for_layer(model, 
                          lname=args.lname, 
@@ -250,23 +266,19 @@ def main():
                          train_loader=train_loader, 
                          val_loader=val_loader, 
                          eval_func=accuracy,
-                         bn_cal_func=batchnorm_callibration, 
+                         bn_cal_func=bncalibrate_layer, 
                          bn_cal_n_iters=1, 
                          score_eps=args.eps,
                          max_rank=max_ranks[args.lname], 
                          min_rank=min_ranks[args.lname],
                          grid_step=1, 
                          device=device)
+    logging.info('Best rank:', best_rank)
     
-    orig_macs, redc_macs = estimate_macs(model, args.lname, best_rank)
-    
-    print('Layer:', args.lname)
-    print('Decomposition:', args.decomposition)
-    print('Eps:', args.eps)
-    print('Best rank:', best_rank)
-    print('Original macs:', orig_macs)
-    print('Reduced macs:', redc_macs)
-    print('Redc/Orig:', redc_macs / orig_macs)
+    orig_macs, redc_macs = estimate_macs(model, args.lname, best_rank, device='cpu')
+    logging.info(f'Original macs: {orig_macs}')
+    logging.info(f'Reduced macs: {redc_macs}')
+    logging.info(f'Redc/Orig: {redc_macs/orig_macs}')
     
     if run:
         wandb.log({'best_rank': best_rank, 'orig_macs': orig_macs,

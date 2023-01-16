@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
+from source.quantization import quantize_tensor
+
 from collections import OrderedDict
 
 
@@ -37,46 +39,24 @@ def init_factors(tensor, rank, init='svd', device=None, seed=None):
     return factors
 
 
-def quantize_tensor_wrapper(qscheme, bits):
-    def _wrapper(x, xmin=None, xmax=None):    
-        q = 2 ** (bits-1)
-        scale_denom = 2*q - 1
-        
-        if xmin is None: xmin = x.min()
-        if xmax is None: xmax = x.max()
-        
-        if qscheme == torch.per_tensor_symmetric:
-            scale = 2 * torch.where(xmin.abs() > xmax, xmin.abs(), xmax) / scale_denom
-            zero_point = torch.zeros(scale.shape).int()
-                
-            return torch.clamp(torch.round(x / scale), -q, q-1).to(int) * scale
-        
-        elif qscheme == torch.per_tensor_affine:
-            scale = (xmax - xmin) / scale_denom 
-            zero_point = (-q - (xmin / scale).int()).int()
-            zero_point = torch.clamp(zero_point, -q, q - 1)
+def admm_iteration(H, U, F, G, max_iter, eps, bits, qscheme):
+    rank = H.shape[1]
+    rho = torch.trace(G) / rank
+    L = torch.linalg.cholesky(G + rho * torch.eye(G.shape[0], device=G.device), upper=False)
+    for j in range(1, max_iter):
+        H_ = torch.cholesky_solve((F + rho * (H + U)).T, L, upper=False)
+        H_T = H_.T
+        H_prev = H.clone()
+        H = quantize_tensor(H_T - U, qscheme=qscheme, bits=bits)
+        U += H - H_T
+
+        r = torch.sum((H - H_T)**2) / torch.sum(H**2)
+        s = torch.sum((H - H_prev)**2) / torch.sum(U**2) 
+        if r < eps and s < eps: 
+            break
             
-            return (torch.clamp(torch.round(x / scale) + zero_point, -q, q-1).to(int) - zero_point) * scale
-    
-    return _wrapper
-
-
-def quantize_tensor(x, qscheme, bits, scale=None):
-    q = 2 ** (bits-1)
-    scale_denom = 2*q - 1
+    return H, U
         
-    xmin = x.min()
-    xmax = x.max()
-        
-    if qscheme == torch.per_tensor_symmetric:
-        if scale is None:
-            scale = 2 * torch.where(xmin.abs() > xmax, xmin.abs(), xmax) / scale_denom
-
-        return torch.clamp(torch.round(x / scale), -q, q-1).to(int) * scale
-
-    else:
-        raise NotImplementedError(qscheme)
-
 
 def admm_iteration_old(H, U, F, G, max_iter, alpha, eps):
     rank = H.shape[1]
@@ -98,25 +78,6 @@ def admm_iteration_old(H, U, F, G, max_iter, alpha, eps):
         # s = torch.linalg.norm(H - H_prev, ord='fro') / torch.linalg.norm(U, ord='fro')
         # torch linalg norm outputs sqrt!!
         r = torch.sum((H - H_.T)**2) / torch.sum(H**2)
-        s = torch.sum((H - H_prev)**2) / torch.sum(U**2) 
-        if r < eps and s < eps: 
-            break
-            
-    return H, U
-
-
-def admm_iteration(H, U, F, G, max_iter, eps, bits):
-    rank = H.shape[1]
-    rho = torch.trace(G) / rank
-    L = torch.linalg.cholesky(G + rho * torch.eye(G.shape[0], device=G.device), upper=False)
-    for j in range(1, max_iter):
-        H_ = torch.cholesky_solve((F + rho * (H + U)).T, L, upper=False)
-        H_T = H_.T
-        H_prev = H.clone()
-        H = quantize_tensor(H_T - U, qscheme=torch.per_tensor_symmetric, bits=bits, scale=None)
-        U += H - H_T
-
-        r = torch.sum((H - H_T)**2) / torch.sum(H**2)
         s = torch.sum((H - H_prev)**2) / torch.sum(U**2) 
         if r < eps and s < eps: 
             break
@@ -207,51 +168,27 @@ def admm_iteration_neighs(H, U, F, G, X, neighs, factors, mode, max_iter, eps):
     return H, U
 
 
-def accuracy(model, dataset_loader, device='cuda', num_classes=1000):
-    def one_hot(x, K):
-        return np.array(x[:, None] == np.arange(K)[None, :], dtype=int)
+# def accuracy(model, dataset_loader, device='cuda', num_classes=1000):
+#     def one_hot(x, K):
+#         return np.array(x[:, None] == np.arange(K)[None, :], dtype=int)
     
-    # Set BN and Droupout to eval regime
-    model.eval()
+#     # Set BN and Droupout to eval regime
+#     model.eval()
 
-    total_correct = 0
+#     total_correct = 0
 
-    for (x, y) in tqdm(dataset_loader):
-        x = x.to(device)
-        y = one_hot(np.array(y.numpy()), num_classes)
-        target_class = np.argmax(y, axis=1)
+#     for (x, y) in tqdm(dataset_loader):
+#         x = x.to(device)
+#         y = one_hot(np.array(y.numpy()), num_classes)
+#         target_class = np.argmax(y, axis=1)
 
-        with torch.no_grad():
-            out = model(x).cpu().detach().numpy()
-            predicted_class = np.argmax(out, axis=1)
-            total_correct += np.sum(predicted_class == target_class)
+#         with torch.no_grad():
+#             out = model(x).cpu().detach().numpy()
+#             predicted_class = np.argmax(out, axis=1)
+#             total_correct += np.sum(predicted_class == target_class)
 
-    total = len(dataset_loader) * dataset_loader.batch_size
-    return total_correct / total
-
-
-def calibrate(model, dataset_loader, device='cuda', num_batches=1000):
-    model.eval()
-    for param in model.parameters():
-        param.requires_grad = False
-
-    # Set BN to train regime
-    for m in model.modules():
-        if isinstance(m, nn.BatchNorm2d):
-            m.train()
-
-    batch_idx = 0
-    for (x, _) in tqdm(dataset_loader):
-        if batch_idx >= num_batches:
-            break
-
-        x = x.to(device)
-        with torch.no_grad():
-            _ = model(x)
-            
-        batch_idx += 1
-
-    return model
+#     total = len(dataset_loader) * dataset_loader.batch_size
+#     return total_correct / total
 
 
 def build_cp_layer(rank, factors, bias, cin, cout, kernel_size, padding, stride):

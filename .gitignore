@@ -2,6 +2,10 @@
 *.sh
 logs/*
 wandb/*
+8bit*
+4bit*
+notebooks/adaround*
+notebooks/e=*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

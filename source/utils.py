@@ -16,7 +16,7 @@ def get_layer_by_name(model, mname):
     return module
 
 
-def batchnorm_callibration(model, train_loader, n_batches = 200000//256, 
+def bncalibrate_layer(model, train_loader, n_batches = 200000//256, 
                            layer_name = None, device="cuda:0"):
     '''
     Update batchnorm statistics for layers after layer_name
@@ -58,4 +58,28 @@ def batchnorm_callibration(model, train_loader, n_batches = 200000//256,
         torch.cuda.empty_cache()
         
     model.eval()
+    return model
+
+
+def bncalibrate_model(model, dataset_loader, num_samples=1000, device='cuda'):
+    model.eval()
+    for param in model.parameters():
+        param.requires_grad = False
+
+    # Set BN to train regime
+    for m in model.modules():
+        if isinstance(m, nn.BatchNorm2d):
+            m.train()
+
+    count = 0
+    for (x, _) in tqdm(dataset_loader):
+        if count > num_samples:
+            break
+
+        x = x.to(device)
+        with torch.no_grad():
+            _ = model(x)
+            
+        count += dataset_loader.batch_size
+
     return model

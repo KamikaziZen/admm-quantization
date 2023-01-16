@@ -27,7 +27,7 @@ def accuracy(model, dataset_loader, device='cuda', num_classes=1000):
     return total_correct / total
 
 
-def estimate_macs(model, layer_name, rank):
+def estimate_macs(model, layer_name, rank, device):
     """Returns original and reduced macs based on reduction rank
     original macs = C_i * W_k * H_k * C_o * W_o * H_o
     reduced macs = rank * C_i * W_i * H_i + rank * W_k * H_k * W_o * H_o + rank * C_o * W_o * H_o
@@ -43,7 +43,7 @@ def estimate_macs(model, layer_name, rank):
     """
     input_shape = output_shape = (1, 3, 224, 224)
     layer = None
-    x = torch.rand(*input_shape)
+    x = torch.rand(*input_shape).to(device)
     model.eval()
     with torch.no_grad():
         for lname, layer in model.named_modules():
@@ -51,6 +51,7 @@ def estimate_macs(model, layer_name, rank):
                     or isinstance(layer, nn.BatchNorm2d) 
                     or isinstance(layer, nn.MaxPool2d) 
                     or isinstance(layer, nn.ReLU)): continue
+            if 'downsample' in lname: continue
             input_shape = x.shape
             x = layer(x)
             output_shape = x.shape
