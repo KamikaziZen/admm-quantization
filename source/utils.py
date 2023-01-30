@@ -4,6 +4,23 @@ import torch.nn as nn
 from tqdm import tqdm
 
 
+def unfold(tensor, mode):
+    """Returns the mode-`mode` unfolding of `tensor` with modes starting at `0`.
+    
+    Parameters
+    ----------
+    tensor : ndarray
+    mode : int, default is 0
+           indexing starts at 0, therefore mode is in ``range(0, tensor.ndim)``
+    
+    Returns
+    -------
+    ndarray
+        unfolded_tensor of shape ``(tensor.shape[mode], -1)``
+    """
+    return torch.reshape(torch.moveaxis(tensor, mode, 0), (tensor.shape[mode], -1))
+
+
 def get_layer_by_name(model, mname):
     '''
     Extract layer using layer name

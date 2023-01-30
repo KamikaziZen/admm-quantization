@@ -3,7 +3,12 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
+import tensorly as tl
+from tensorly.decomposition import parafac
+
 from source.quantization import quantize_tensor
+from source.utils import unfold
+from source.parafac_epc import parafac_epc
 
 from collections import OrderedDict
 
@@ -15,24 +20,30 @@ def squared_relative_diff(X, Y):
 #     return (torch.sum((X - Y)**2) / torch.sum(X**2)).item()
 
 
-def init_factors(tensor, rank, init='svd', device=None, seed=None):
-    def unfold(tensor, mode):
-        return torch.reshape(torch.moveaxis(tensor, mode, 0), (tensor.shape[mode], -1))
-    
+def init_factors(tensor, rank, init='random', device=None, seed=None):
     gen = torch.Generator(device=device)
     gen.manual_seed(seed)
+
     factors = []
     if init == 'random':
         for mode in range(tensor.ndim):
             factors.append(torch.randn(tensor.shape[mode], rank, generator=gen, device=device))
     elif init == 'svd':
-        print('init with svd')
         for mode in range(tensor.ndim):
             U, _, _ = torch.linalg.svd(unfold(tensor, mode), full_matrices=False)
             if tensor.shape[mode] < rank: 
                 random_part = torch.randn(U.shape[0], rank - tensor.shape[mode], generator=gen, device=device)
                 U = torch.cat((U, random_part), axis=1)
             factors.append(U[:, :rank])
+    elif init == 'parafac':
+        _, factors = parafac(tensor, rank=rank, init='random', random_state=seed,
+                             tol=1e-6, n_iter_max=1000)
+    elif init == 'parafac-epc':
+        tl.set_backend('pytorch') 
+        _, factors = parafac_epc(tensor, rank=rank, init='random',
+                                 als_maxiter=50, als_tol=1e-6,
+                                 epc_maxiter=50)
+        factors = [torch.tensor(factor) for factor in factors]
     else:
         raise NotImplementedError(init)
         

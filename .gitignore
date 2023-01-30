@@ -1,11 +1,11 @@
 # Custom
 *.sh
+*.png
 logs/*
 wandb/*
-8bit*
-4bit*
+?bit*
 notebooks/adaround*
-notebooks/e=*
+checkpoints/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -73,7 +73,7 @@ def parse_args():
                         help="Number of workers for dataloaders.")
     parser.add_argument("--start_reduction_rate",
                         required=False, 
-                        type=int,
+                        type=float,
                         help="Reduction rate from which to start binary search.")
     parser.add_argument("--min_rank",
                         required=False, 
@@ -208,7 +208,6 @@ def main():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     logging.info(f'Running on: {device}')
     
-    
     args = parse_args()
     set_seed(args.seed)
     logging.info(f'Args: {args}')
@@ -273,7 +272,7 @@ def main():
                          min_rank=min_ranks[args.lname],
                          grid_step=1, 
                          device=device)
-    logging.info('Best rank:', best_rank)
+    logging.info(f'Best rank: {best_rank}')
     
     orig_macs, redc_macs = estimate_macs(model, args.lname, best_rank, device='cpu')
     logging.info(f'Original macs: {orig_macs}')

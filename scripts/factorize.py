@@ -13,6 +13,7 @@ import random
 
 from source.quantization import quantize_tensor
 from source.admm import admm_iteration, init_factors, squared_relative_diff
+from source.parafac_epc import parafac_epc
 
 from argparse import ArgumentParser
 
@@ -29,6 +30,7 @@ def run_name(args):
     run_name.append(f"r={args.rank}")
     run_name.append(f"b={args.bits}")
     run_name.append(f"s={args.seed}")
+    run_name.append(f"i={args.init}")
     run_name.append(f"{args.qscheme}")
     return '_'.join(run_name)
 
@@ -42,6 +44,11 @@ def parse_args():
                         type=str, 
                         required=True,
                         help="[admm, parafac]")
+    parser.add_argument("--init",
+                        type=str,
+                        required=False,
+                        default='random',
+                        help="[random, parafac, parafac-epc]")
     parser.add_argument("--layer", 
                         type=str, 
                         required=True,
@@ -54,6 +61,10 @@ def parse_args():
                         required=True, 
                         type=int,
                         help="Number of quantization bits.")
+    parser.add_argument("--max_iter_als",
+                        required=True, 
+                        type=int,
+                        help="Maximum number of iterations of ALS.")
     parser.add_argument("--seed",
                         required=True, 
                         type=int,
@@ -61,22 +72,21 @@ def parse_args():
     parser.add_argument("--qscheme",
                         required=True,
                         type=str,
-                        help="[tensor_symmetric, tensor_affine, 'tensor_mse']")
+                        help="[tensor_symmetric, tensor_affine, tensor_mse, tensor_minmaxlog]")
 
     args = parser.parse_args()
-    # Sanity Check
-    if args.method not in ['admm', 'parafac']:
-        raise ValueError('Method must be on of [admm, parafac].')
-    if args.qscheme not in ['tensor_symmetric', 'tensor_affine', 'tensor_mse']:
-        raise ValueError('Qscheme must be on of [tensor_symmetric, tensor_affine, tensor_mse].')
+    # Args Check
+#     if args.method not in ['admm', 'parafac']:
+#         raise ValueError('Method must be on of [admm, parafac].')
+#     if args.qscheme not in ['tensor_symmetric', 'tensor_affine', 'tensor_mse', 'tensor_minmaxlog']:
+#         raise ValueError('Qscheme must be one of [tensor_symmetric, tensor_affine, tensor_mse, tensor_minmaxlog].')
     return args
 
 
 def main():
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+#     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = 'cpu'
     print('Running on:', device)
-    
-    init_method = 'random'
     
     args = parse_args()
     print('Args:', args)
@@ -121,24 +131,24 @@ def main():
     if args.method == 'admm':
         eps = 1e-8
         tol = 1e-5
-        max_iter = 300
         max_iter_factor = 1000
         loss_hist = []
         loss_quant_hist = []
         if run:
             wandb.config.update({"tol": tol, 
                                  "eps": eps,
-                                 "max_iter": max_iter,
+                                 "max_iter": args.max_iter_als,
                                  "max_iter_factor": max_iter_factor})
         # 3-tensor case
         if weight.ndim == 3:
-            A, B, C = init_factors(weight, rank=args.rank, init=init_method, 
+            A, B, C = init_factors(weight, rank=args.rank, init=args.init, 
                                    device=device, seed=args.seed)
+            print(weight.dtype, A.dtype)
             U_A = torch.zeros_like(A, device=device)
             U_B = torch.zeros_like(B, device=device)
             U_C = torch.zeros_like(C, device=device)
 
-            for i in tqdm(range(max_iter)):
+            for i in tqdm(range(args.max_iter_als)):
                 G = B.T @ B * (C.T @ C)
                 # mttkrp
                 F = torch.einsum('abc,cr,br->ar', weight, C, B)
@@ -193,12 +203,12 @@ def main():
             factors_quantized = [A_quantized, B_quantized, C_quantized]
         # matrix case
         elif weight.ndim == 2:
-            A, B = init_factors(weight, rank=args.rank, init=init_method, 
+            A, B = init_factors(weight, rank=args.rank, init=args.init, 
                                 device=device, seed=args.seed)
             U_A = torch.zeros_like(A, device=device)
             U_B = torch.zeros_like(B, device=device)
 
-            for i in tqdm(range(max_iter)):
+            for i in tqdm(range(args.max_iter_als)):
                 G = B.T @ B
                 F = weight @ B
                 A, U_A = admm_iteration(A, U_A, F, G, 
@@ -236,19 +246,28 @@ def main():
                 factors_quantized = [A_quantized, B_quantized]
 
         else: 
-            raise ValueError('Incorrect number of dimentions in X')
+            raise ValueError('Incorrect number of dimentions in weight tensor')
 
         torch.save(loss_hist, 
-          f'{outdir}/{args.layer}_{args.method}_{init_method}_rank_{args.rank}_losshist.pt')
+          f'{outdir}/{args.layer}_{args.method}_{args.init}_rank_{args.rank}_losshist.pt')
         torch.save(loss_quant_hist, 
-          f'{outdir}/{args.layer}_{args.method}_{init_method}_rank_{args.rank}_lossquanthist.pt')
+          f'{outdir}/{args.layer}_{args.method}_{args.init}_rank_{args.rank}_lossquanthist.pt')
 
     elif args.method == 'parafac':
         tl.set_backend('pytorch')
-#         _, factors = parafac(weight, rank=args.rank, init=init_method, random_state=args.seed, 
+#         _, factors = parafac(weight, rank=args.rank, init=args.init, random_state=args.seed, 
 #                              tol=1e-8, stop_criterion='rec_error_deviation', n_iter_max=5000)
-        _, factors = parafac(weight, rank=args.rank, init=init_method, random_state=args.seed, 
+        _, factors = parafac(weight, rank=args.rank, init=args.init, random_state=args.seed, 
                              tol=1e-8, n_iter_max=5000)
+        factors_quantized = [quantize_tensor(factor, 
+                                             qscheme=args.qscheme, 
+                                             bits=args.bits) for factor in factors]
+    elif args.method == 'parafac_epc':
+        tl.set_backend('pytorch')
+        _, factors = parafac_epc(weight, rank=args.rank, init=args.init,
+                                 als_maxiter=500, als_tol=1e-6,
+                                 epc_maxiter=500)
+        factors = [torch.tensor(factor) for factor in factors]
         factors_quantized = [quantize_tensor(factor, 
                                              qscheme=args.qscheme, 
                                              bits=args.bits) for factor in factors]
@@ -261,7 +280,7 @@ def main():
 
     for mode, factor in enumerate(factors):
         torch.save(factor, 
-            f'{outdir}/{args.layer}_{args.method}_{init_method}_rank_{args.rank}_mode_{mode}.pt')
+            f'{outdir}/{args.layer}_{args.method}_{args.init}_rank_{args.rank}_mode_{mode}.pt')
 
     if weight.ndim == 3:
         print('Factorization error is {} for usual and {} for quantized'.format(
@@ -271,7 +290,7 @@ def main():
 #     elif X.ndim == 2:
 #         pass
     else:
-        raise ValueError('Incorrect number of dimentions in X')
+        raise ValueError('Incorrect number of dimentions in weight tensor')
 
     if run: run.finish()
         
