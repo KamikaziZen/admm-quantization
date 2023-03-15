@@ -44,7 +44,7 @@ python scripts/custom_benchmark.py  --model-path=checkpoints/resnet18_m=admm_b=4
                                                 --with-wandb
 ```
 
-# Quantize with aimet: 
+# Quantize with aimet(REQUIRES INSTALLING AIMET FRAMEWORK): 
 ```
 python scripts/quantize_with_aimet.py --method=admm \
                                         --model-name='resnet18' \
