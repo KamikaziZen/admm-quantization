@@ -201,7 +201,6 @@ def main():
                               num_samples=2048, 
                               device=device)
     
-    
     # quantizing batchnorms to 8 bits
     state_dict_quant = OrderedDict()
     for name, w in model.state_dict().items():

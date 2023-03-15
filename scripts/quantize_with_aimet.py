@@ -34,14 +34,11 @@ def run_name(args):
     run_name = [args.model_name]
     run_name.append(f"m={args.method}")
     run_name.append(f"b={args.bits}")
-    if args.eps: run_name.append(f"e={args.eps}")
-    else: run_name.append(f"r={args.reduction_rate}")
-    run_name.append(f"d={args.decomp}")
+    run_name.append(f"r={args.reduction_rate}")
     run_name.append(f"i={args.init}")
     run_name.append(f"s={args.seed}")
     run_name.append(f"{args.qscheme}")
     run_name.append(f"calibrated_{args.calibration_samples}")
-    if args.no_layer1: run_name.append("no_layer1")
     run_name.append(f"w={args.param_bw}")
     run_name.append(f"a={args.output_bw}")
     if args.adaround: run_name.append("ada")
@@ -63,7 +60,7 @@ def parse_args():
     parser.add_argument("--method", 
                         type=str, 
                         required=True,
-                        help="[admm, parafac]")
+                        help="[admm, parafac, parafac-epc]")
     parser.add_argument("--init",
                         type=str,
                         required=False,
@@ -106,37 +103,20 @@ def parse_args():
     parser.add_argument("--qscheme",
                         required=True,
                         type=str,
-                        help="[tensor_symmetric, tensor_affine, tensor_log, tensor_mse, tensor_minmaxlog]")
+                        help="[tensor_mseminmax_symmetric, tensor_minmax]")
     parser.add_argument("--aimet-qscheme",
                         required=False,
                         default='tf-enhanced',
                         type=str)
-    parser.add_argument("--eps",
-                        required=False,
-                        type=float)
     parser.add_argument("--reduction-rate",
                         required=False,
                         type=float)
-    parser.add_argument("--decomp",
-                        required=False,
-                        type=str)
-    parser.add_argument("--no_layer1",
-                        action="store_true",
-                        help='If True, layer1.0.conv1 is not factorized.')
     parser.add_argument("--adaround",
                         action="store_true")
     parser.add_argument("--num-workers",
                         type=int,
                         required=False,
                         default=4)
-    parser.add_argument("--fused", 
-                        action='store_true')
-    parser.add_argument("--conv1", 
-                        action='store_true')
-    parser.add_argument("--downsample", 
-                        action='store_true')
-    parser.add_argument("--fold",
-                        action='store_true')
     
     args = parser.parse_args()
     return args
@@ -184,10 +164,6 @@ def main():
         
     # calibrated model
     model_name = run_name(args).split('_w=')[0]
-    if args.fused: model_name += '_fused'
-    if args.conv1: model_name += '_conv1'
-    if args.downsample: model_name += '_downsample'
-#     model = torch.load('checkpoints/'+model_name)
     model = torch.load('checkpoints_stas/'+model_name)
     model = model.to(device)
     model.eval()
@@ -205,20 +181,6 @@ def main():
                                        num_workers=args.num_workers,
                                        pin_memory=True,
                                        shuffle=False)
-    
-    # factorized model macs
-#     model_stats = FlopCo(model.to(device), img_size=(1, 3, 224, 224), device=device)
-#     redc_macs = 0
-#     for x in model_stats.macs.values():
-#         redc_macs += x[0]
-#     redc_macs_pc = redc_macs / 1814073344
-#     logging.info(f'Reduced Macs: {redc_macs_pc}')    
-#     if run: wandb.log({'macs_reduced': redc_macs_pc})
-        
-#     # % BOPs = output_bw * MACs * param_bw
-#     bops = args.param_bw / 32 * args.output_bw / 32 * redc_macs_pc * 100
-#     logging.info(f'%BOPS: {bops}')
-#     if run: wandb.log({'bops': bops})
         
     # preparing model for quantization   
     model = prepare_model(model)
