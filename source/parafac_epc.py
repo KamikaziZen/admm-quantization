@@ -6,9 +6,7 @@ from tensorly.decomposition import parafac
 from tensorly.decomposition.candecomp_parafac import initialize_factors
 from tensorly.kruskal_tensor import KruskalTensor, kruskal_to_tensor
 
-from musco.pytorch.compressor.decompose.cpd.lib_fastals import cp_fast_als
 from musco.pytorch.compressor.decompose.cpd.lib_anc import cp_anc
-from musco.pytorch.compressor.decompose.cpd.lib import backend, to_tensor, B, Bla, save, size, transpose, copy_tensor
 
 
 def parafac_epc(tensor, rank, als_maxiter=5000, als_tol=1e-5, num_threads=4,
@@ -35,28 +33,23 @@ def parafac_epc(tensor, rank, als_maxiter=5000, als_tol=1e-5, num_threads=4,
     torch.set_num_threads(num_threads)
     tl.set_backend('pytorch')
     
-    Y = to_tensor(tensor, dtype=B.float64)
-    shape = size(Y)
-#     print('Y shape:', shape)
+    Y = torch.as_tensor(tensor, dtype=torch.float64, device=tensor.device)
+    shape = Y.size()
     order = np.argsort(shape)
-#     print('order:', order)
     iorder = np.argsort(order)[::-1]
-#     print('iorder:', iorder)
-    Y = transpose(Y, order)
+    Y = Y.permute(tuple(order))
     
-    tl.set_backend('numpy')
     P_init = parafac(Y, rank, n_iter_max=als_maxiter, init=init,
                      tol=als_tol, svd=None, normalize_factors=True)
 
-    Us = [copy_tensor(P_init.factors[i]) for i in iorder]
-#     print([factor.shape for factor in Us])
-#     Us = [copy_tensor(factor) for factor in P_init.factors]
+    Us = [torch.tensor(P_init.factors[i]) for i in iorder]
+    print(Us[0].dtype)
     # Us[-1] *= P_init.weights
     lmbda = P_init.weights
 
     # Apply EPC
-    delta = Bla.norm(Y - kruskal_to_tensor(P_init))
-    norm_lda0 = Bla.norm(P_init.weights)
+    delta = torch.norm(Y - kruskal_to_tensor(P_init))
+    norm_lda0 = torch.norm(P_init.weights)
     P_init.factors[-1] *= P_init.weights
     P_als = KruskalTensor((None, P_init.factors))
 
@@ -68,26 +61,22 @@ def parafac_epc(tensor, rank, als_maxiter=5000, als_tol=1e-5, num_threads=4,
     for i in range(epc_rounds):
         print(f'{i} round')
         P_als = cp_anc(Y, rank, delta, P_init=P_als, maxiter=epc_maxiter, tol=epc_tol)
-        lambda_norm = Bla.norm(P_als.weights)
+        lambda_norm = torch.norm(P_als.weights)
         alpha = P_als.weights.max() / P_als.weights.min()
         # check that sum of squares of intensities isn't change much
-        if B.abs(lambda_norm_prev - lambda_norm) < stop_tol * lambda_norm_prev: break
+        if torch.abs(lambda_norm_prev - lambda_norm) < stop_tol * lambda_norm_prev: break
         # check ratio between max and min intensities
-        stopflag = stopflag + 1 if B.abs(alpha_prev - alpha) < ratio_tol else 0
+        stopflag = stopflag + 1 if torch.abs(alpha_prev - alpha) < ratio_tol else 0
         lambda_norm_prev = lambda_norm
         alpha_prev = alpha
         alpha_list += [alpha]
-        # save(P_als, self.template.format("tmp"))
 
         if stopflag >= ratio_max_iters: break
 
-    # save(alpha_list, self.template.format("lam"))
 
-    # save factors
-    Us = [copy_tensor(P_als.factors[i]) for i in iorder[::-1]]  # (f_cin, f_cout, f_z)
-#     print([factor.shape for factor in Us])
-#     Us = [copy_tensor(factor) for factor in P_als.factors]
+    Us = [torch.tensor(P_als.factors[i]) for i in iorder[::-1]]  # (f_cin, f_cout, f_z)
     # Us[-1] *= P_als.weights
     lmbda = P_als.weights
+    print(Us[0].dtype)
 
     return lmbda, Us

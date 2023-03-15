@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.autograd import Variable
 from tqdm import tqdm
 
 
@@ -27,44 +28,33 @@ def accuracy(model, dataset_loader, device='cuda', num_classes=1000):
     return total_correct / total
 
 
-def estimate_macs(model, layer_name, rank, device):
-    """Returns original and reduced macs based on reduction rank
-    original macs = C_i * W_k * H_k * C_o * W_o * H_o
-    reduced macs = rank * C_i * W_i * H_i + rank * W_k * H_k * W_o * H_o + rank * C_o * W_o * H_o
-    where:
-        C_i - number of input channels
-        C_o - number of output channels
-        W_o - width of the output image
-        H_o - height of the output image
-        W_i - width of the input image
-        H_i - height of the input image
-        W_k - width of the kernel
-        H_k - height of the kernel
-    """
-    input_shape = output_shape = (1, 3, 224, 224)
-    layer = None
-    x = torch.rand(*input_shape).to(device)
+def accuracy_top1top5(model, ds, n_sample=None, ngpu=1, device='cuda'):
+
+    correct1, correct5 = 0, 0
+    n_passed = 0
+    # Set BN and Droupout to eval regime
     model.eval()
-    with torch.no_grad():
-        for lname, layer in model.named_modules():
-            if not (isinstance(layer, nn.Conv2d) 
-                    or isinstance(layer, nn.BatchNorm2d) 
-                    or isinstance(layer, nn.MaxPool2d) 
-                    or isinstance(layer, nn.ReLU)): continue
-            if 'downsample' in lname: continue
-            input_shape = x.shape
-            x = layer(x)
-            output_shape = x.shape
-            if lname == layer_name: break
-                
-    if not isinstance(layer, nn.Conv2d):
-        raise NotImplementedError('Function estimate_macs works only for Conv2d layers')
-        
-    orig_macs = layer.in_channels * layer.kernel_size[-1] * layer.kernel_size[-2] \
-                * layer.out_channels * output_shape[-1] * output_shape[-2]
-    redc_macs = rank * layer.in_channels * input_shape[-1] * input_shape[-2] \
-                + rank * layer.kernel_size[-1] * layer.kernel_size[-2] \
-                  * output_shape[-1] * output_shape[-2] \
-                + rank * layer.out_channels * output_shape[-1] * output_shape[-2]
     
-    return orig_macs, redc_macs
+    model = torch.nn.DataParallel(model, device_ids=range(ngpu)).to(device)
+
+    for data, target in tqdm(ds):
+        n_passed += len(data)
+        data = Variable(torch.FloatTensor(data)).to(device)
+        indx_target = torch.LongTensor(target)
+        output = model(data)
+        bs = output.size(0)
+        idx_pred = output.data.sort(1, descending=True)[1]
+
+        idx_gt1 = indx_target.expand(1, bs).transpose_(0, 1)
+        idx_gt5 = idx_gt1.expand(bs, 5)
+
+        correct1 += idx_pred[:, :1].cpu().eq(idx_gt1).sum()
+        correct5 += idx_pred[:, :5].cpu().eq(idx_gt5).sum()
+
+        if n_sample and n_passed >= n_sample:
+            break
+    print('samples evaluated:', n_passed)
+            
+    acc1 = correct1 * 1.0 / n_passed
+    acc5 = correct5 * 1.0 / n_passed
+    return acc1, acc5

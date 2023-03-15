@@ -1,6 +1,7 @@
 from flopco import FlopCo
 
 import torch
+import torch.nn as nn
 
 from aimet_torch.model_preparer import prepare_model
 from aimet_torch.batch_norm_fold import fold_all_batch_norms
@@ -16,6 +17,7 @@ import numpy as np
 import os
 import random
 from functools import partial
+from collections import OrderedDict
 
 from argparse import ArgumentParser
 import logging
@@ -29,11 +31,13 @@ def set_seed(seed):
     
     
 def run_name(args):
-    run_name = []
+    run_name = [args.model_name]
     run_name.append(f"m={args.method}")
     run_name.append(f"b={args.bits}")
-    run_name.append(f"e={args.eps}")
+    if args.eps: run_name.append(f"e={args.eps}")
+    else: run_name.append(f"r={args.reduction_rate}")
     run_name.append(f"d={args.decomp}")
+    run_name.append(f"i={args.init}")
     run_name.append(f"s={args.seed}")
     run_name.append(f"{args.qscheme}")
     run_name.append(f"calibrated_{args.calibration_samples}")
@@ -47,13 +51,24 @@ def run_name(args):
 
 def parse_args():
     parser = ArgumentParser()
-    parser.add_argument("--with_wandb",
+    parser.add_argument("--with-wandb",
                         action="store_true",
                         help="Whether to enable experiment logging to wandb.")
+    parser.add_argument("--model-name",
+                        type=str,
+                        required=True)
+    parser.add_argument("--data-root",
+                        type=str,
+                        help="Root dir of ImageNet Dataset")
     parser.add_argument("--method", 
                         type=str, 
                         required=True,
                         help="[admm, parafac]")
+    parser.add_argument("--init",
+                        type=str,
+                        required=False,
+                        default='random',
+                        help="[random, parafac-epc]")
     parser.add_argument("--bits",
                         required=True, 
                         type=int,
@@ -66,41 +81,63 @@ def parse_args():
                         required=True, 
                         type=int,
                         help="Weights bitwidth.")
-    parser.add_argument("--calibration_samples",
+    parser.add_argument("--calibration-samples",
                         required=True, 
                         type=int,
                         help="Number of samples for calibration.")
-    parser.add_argument("--batch_size",
+    parser.add_argument("--batch-size",
                         required=False, 
                         default=32,
                         type=int)
     parser.add_argument("--adaround_samples",
-                        required=True, 
+                        required=False, 
                         type=int,
+                        default=2048,
                         help="Number of samples for adaround.")
     parser.add_argument("--adaround_iterations",
                         required=False, 
                         default=20000,
                         type=int)
     parser.add_argument("--seed",
-                        required=True, 
+                        required=False, 
                         type=int,
+                        default=42,
                         help="Random seed.")
     parser.add_argument("--qscheme",
                         required=True,
                         type=str,
-                        help="[tensor_symmetric, tensor_affine, tensor_mse, tensor_minmaxlog]")
+                        help="[tensor_symmetric, tensor_affine, tensor_log, tensor_mse, tensor_minmaxlog]")
+    parser.add_argument("--aimet-qscheme",
+                        required=False,
+                        default='tf-enhanced',
+                        type=str)
     parser.add_argument("--eps",
-                        required=True,
+                        required=False,
+                        type=float)
+    parser.add_argument("--reduction-rate",
+                        required=False,
                         type=float)
     parser.add_argument("--decomp",
-                        required=True,
+                        required=False,
                         type=str)
     parser.add_argument("--no_layer1",
                         action="store_true",
                         help='If True, layer1.0.conv1 is not factorized.')
     parser.add_argument("--adaround",
                         action="store_true")
+    parser.add_argument("--num-workers",
+                        type=int,
+                        required=False,
+                        default=4)
+    parser.add_argument("--fused", 
+                        action='store_true')
+    parser.add_argument("--conv1", 
+                        action='store_true')
+    parser.add_argument("--downsample", 
+                        action='store_true')
+    parser.add_argument("--fold",
+                        action='store_true')
+    
     args = parser.parse_args()
     return args
 
@@ -147,43 +184,72 @@ def main():
         
     # calibrated model
     model_name = run_name(args).split('_w=')[0]
-    model = torch.load('checkpoints/'+model_name)
+    if args.fused: model_name += '_fused'
+    if args.conv1: model_name += '_conv1'
+    if args.downsample: model_name += '_downsample'
+#     model = torch.load('checkpoints/'+model_name)
+    model = torch.load('checkpoints_stas/'+model_name)
     model = model.to(device)
     model.eval()
     
     # datasets
-    train_loader, val_loader = get_imagenet_train_val_loaders(data_root='/gpfs/gpfs0/k.sobolev/ILSVRC-12/',
+    train_loader, val_loader = get_imagenet_train_val_loaders(data_root=args.data_root,
                                        batch_size=args.batch_size,
-                                       num_workers=4,
+                                       num_workers=args.num_workers,
                                        pin_memory=True,
                                        val_perc=0.04,
                                        shuffle=True,
                                        random_seed=args.seed)
-    test_loader = get_imagenet_test_loader(data_root='/gpfs/gpfs0/k.sobolev/ILSVRC-12/', 
+    test_loader = get_imagenet_test_loader(data_root=args.data_root, 
                                        batch_size=args.batch_size,
-                                       num_workers=4,
+                                       num_workers=args.num_workers,
                                        pin_memory=True,
                                        shuffle=False)
     
     # factorized model macs
-    model_stats = FlopCo(model.to(device), img_size=(1, 3, 224, 224), device=device)
-    redc_macs = 0
-    for x in model_stats.macs.values():
-        redc_macs += x[0]
-    redc_macs_pc = redc_macs / 1814073344
-    logging.info(f'Reduced Macs: {redc_macs_pc}')    
-    if run: wandb.log({'macs_reduced': redc_macs_pc})
+#     model_stats = FlopCo(model.to(device), img_size=(1, 3, 224, 224), device=device)
+#     redc_macs = 0
+#     for x in model_stats.macs.values():
+#         redc_macs += x[0]
+#     redc_macs_pc = redc_macs / 1814073344
+#     logging.info(f'Reduced Macs: {redc_macs_pc}')    
+#     if run: wandb.log({'macs_reduced': redc_macs_pc})
         
-    # % BOPs = output_bw * MACs * param_bw
-    bops = args.param_bw / 32 * args.output_bw / 32 * redc_macs_pc * 100
-    logging.info(f'%BOPS: {bops}')
-    if run: wandb.log({'bops': bops})
+#     # % BOPs = output_bw * MACs * param_bw
+#     bops = args.param_bw / 32 * args.output_bw / 32 * redc_macs_pc * 100
+#     logging.info(f'%BOPS: {bops}')
+#     if run: wandb.log({'bops': bops})
         
-    # quantization    
+    # preparing model for quantization   
     model = prepare_model(model)
-    _ = fold_all_batch_norms(model, input_shapes=(1, 3, 224, 224))
-    dummy_input = torch.rand(1, 3, 224, 224)    # Shape for each ImageNet sample is (3 channels) x (224 height) x (224 width)
+    if args.fold:
+        _ = fold_all_batch_norms(model, input_shapes=(1, 3, 224, 224))
+        
+    # counting macs and bops(macs * weight bitwidth * input bitwidth)
+    model_stats = FlopCo(model, img_size=(1, 3, 224, 224), device=device,
+                         instances=[nn.Conv2d, nn.Linear, nn.BatchNorm2d, nn.ReLU, nn.MaxPool2d, nn.AvgPool2d])
+    macs = 0
+    for x in model_stats.macs.values():
+        macs += x[0]
+    bops_stats = OrderedDict()
+    bops = 0
+    for name, macs_list in model_stats.macs.items():
+        bops_stats[name]  = macs_list[0] * args.output_bw * args.param_bw
+        bops += bops_stats[name]
+    logging.info(str(bops_stats))
+    logging.info(f'Macs: {macs}, Bops: {bops}')
+    if run:
+        wandb.log({'macs': macs, 'bops': bops})
+        
+    # quantization
+    dummy_input = torch.rand(1, 3, 224, 224) # Shape for each ImageNet sample is (3 channels) x (224 height) x (224 width)
     dummy_input = dummy_input.to(device)
+    
+    if args.aimet_qscheme == 'tf_enhanced':
+        aimet_qscheme = QuantScheme.post_training_tf_enhanced
+    else:
+        aimet_qscheme = QuantScheme.post_training_tf
+    
     if args.adaround:
         params = AdaroundParameters(data_loader=val_loader, 
                                     num_batches=args.adaround_samples//val_loader.batch_size, 
@@ -193,10 +259,10 @@ def main():
                                     path='adaround/', 
                                     filename_prefix=model_name, 
                                     default_param_bw=args.param_bw,
-                                    default_quant_scheme=QuantScheme.post_training_tf_enhanced)
+                                    default_quant_scheme=aimet_qscheme)
         
     sim = QuantizationSimModel(model=model,
-                               quant_scheme=QuantScheme.post_training_tf_enhanced,
+                               quant_scheme=aimet_qscheme,
                                dummy_input=dummy_input,
                                default_output_bw=args.output_bw,
                                default_param_bw=args.param_bw)

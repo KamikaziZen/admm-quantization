@@ -42,42 +42,57 @@ def run_name(args):
 
 def parse_args():
     parser = ArgumentParser()
-    parser.add_argument("--model_name",
+    parser.add_argument("--model-name",
                         type=str,
                         help="[resnet18, resnet34, resnet50]")
-    parser.add_argument("--data_root",
+    parser.add_argument("--data-root",
                         type=str,
                         help="Root dir of ImageNet Dataset")
-    parser.add_argument("--with_wandb",
+    parser.add_argument("--with-wandb",
                         action="store_true",
                         help="Whether to enable experiment logging to wandb.")
-    parser.add_argument("--output_bw",
+    parser.add_argument("--output-bw",
                         required=True, 
                         type=int,
                         help="Activations bitwidth.")
-    parser.add_argument("--param_bw",
+    parser.add_argument("--param-bw",
                         required=True, 
                         type=int,
                         help="Weights bitwidth.")
-    parser.add_argument("--batch_size",
+    parser.add_argument("--qscheme",
+                        required=False,
+                        default='tf_enhanced',
+                        type=str,
+                        help='Use tf for usual min-max and tf_enhanced for sqnr-optimized min-max.')
+    parser.add_argument("--batch-size",
                         required=False, 
                         default=32,
                         type=int)
-    parser.add_argument("--adaround_samples",
-                        required=True, 
+    parser.add_argument("--adaround-samples",
+                        required=False, 
+                        default=2048,
                         type=int,
                         help="Number of samples for adaround.")
-    parser.add_argument("--adaround_iterations",
+    parser.add_argument("--adaround-iterations",
                         required=False, 
                         default=20000,
                         type=int)
     parser.add_argument("--seed",
-                        required=True, 
+                        required=False, 
                         type=int,
+                        default=42,
                         help="Random seed.")
     parser.add_argument("--adaround",
                         action="store_true")
+    parser.add_argument("--num-workers",
+                        type=int,
+                        required=False,
+                        default=4)
+    
     args = parser.parse_args()
+    if args.qscheme not in ['tf_enhanced', 'tf']:
+        raise ValueError(f'Unrecognised qscheme: {args.qscheme}')
+    
     return args
 
 
@@ -121,33 +136,35 @@ def main():
     else:
         run=None
         
-    # calibrated model
     # setting random model name for adaround tmp files 
     ada_path = f'{args.model_name}_{time.time()}'
+    
     if args.model_name == 'resnet18':
         model = resnet18(pretrained=True)
     elif args.model_name == 'resnet34':
         model = resnet34(pretrained=True)
     elif args.model_name == 'resnet50':
         model = resnet50(pretrained=True)
+    else:
+        raise ValueError('Unrecognized model name')
     model = model.to(device)
     model.eval()
     
     # datasets
     train_loader, val_loader = get_imagenet_train_val_loaders(data_root=args.data_root,
                                        batch_size=args.batch_size,
-                                       num_workers=4,
+                                       num_workers=args.num_workers,
                                        pin_memory=True,
                                        val_perc=0.04,
                                        shuffle=True,
                                        random_seed=args.seed)
     test_loader = get_imagenet_test_loader(data_root=args.data_root, 
                                        batch_size=args.batch_size,
-                                       num_workers=4,
+                                       num_workers=args.num_workers,
                                        pin_memory=True,
                                        shuffle=False)
     
-    # % BOPs = output_bw * MACs * param_bw
+    # BOPs = output_bw * MACs * param_bw
     bops = args.param_bw / 32 * args.output_bw / 32 * 100
     logging.info(f'%BOPS: {bops}')
     if run: wandb.log({'bops': bops})
@@ -155,24 +172,32 @@ def main():
     # quantization    
     model = prepare_model(model)
     _ = fold_all_batch_norms(model, input_shapes=(1, 3, 224, 224))
-    dummy_input = torch.rand(1, 3, 224, 224)    # Shape for each ImageNet sample is (3 channels) x (224 height) x (224 width)
+    dummy_input = torch.rand(1, 3, 224, 224) 
     dummy_input = dummy_input.to(device)
+    
+    if args.qscheme == 'tf_enhanced':
+        qscheme = QuantScheme.post_training_tf_enhanced
+    else:
+        qscheme = QuantScheme.post_training_tf
+        
     if args.adaround:
         params = AdaroundParameters(data_loader=val_loader, 
                                     num_batches=args.adaround_samples//val_loader.batch_size, 
                                     default_num_iterations=args.adaround_iterations)
         os.makedirs('adaround/', exist_ok=True)
         model = Adaround.apply_adaround(model, dummy_input, params,
-                                    path='adaround/', 
-                                    filename_prefix=ada_path, 
-                                    default_param_bw=args.param_bw,
-                                    default_quant_scheme=QuantScheme.post_training_tf_enhanced)
+                                        path='adaround/', 
+                                        filename_prefix=ada_path, 
+                                        default_param_bw=args.param_bw,
+                                        default_quant_scheme=qscheme)
         
     sim = QuantizationSimModel(model=model,
-                               quant_scheme=QuantScheme.post_training_tf_enhanced,
+                               quant_scheme=qscheme,
                                dummy_input=dummy_input,
                                default_output_bw=args.output_bw,
                                default_param_bw=args.param_bw)
+    logging.info(str(sim))
+#     logging.info(str(sim.__dir__))
     
     if args.adaround:
         sim.set_and_freeze_param_encodings(

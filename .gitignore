@@ -1,9 +1,14 @@
 # Custom
+*.npz
+*_delete.py
 *.sh
 *.png
 logs/*
 wandb/*
+notebooks/*
 ?bit*
+adaround/*
+checkpoints*
 notebooks/adaround*
 checkpoints/
 
