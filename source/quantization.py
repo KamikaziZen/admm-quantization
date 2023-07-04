@@ -335,7 +335,8 @@ def duplicate_resnet_factorized_with_quant(model, ltype, **kwargs):
                     elif isinstance(l, nn.Sequential):
                         l.__setattr__('conv1', add_quant('conv1', l.conv1, ltype, **kwargs))
                         l.__setattr__('conv2', add_quant('conv2', l.conv2, ltype, **kwargs))
-                        l.__setattr__('conv3', add_quant('conv3', l.conv3, ltype, **kwargs))
+                        if hasattr(l, 'conv3'):
+                            l.__setattr__('conv3', add_quant('conv3', l.conv3, ltype, **kwargs))
                     elif not isinstance(l, nn.ReLU):
                         m[i].__setattr__(kl, add_quant(kl, l, ltype, **kwargs))
         elif not isinstance(m, (DeQuantStub, nn.ReLU, nn.MaxPool2d, nn.AdaptiveAvgPool2d)):

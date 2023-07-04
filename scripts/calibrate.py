@@ -2,7 +2,7 @@ from flopco import FlopCo
 
 import torch
 import torch.nn as nn
-from torchvision.models import ResNet18_Weights
+from torchvision.models import resnet18, resnet50
 
 from tqdm import tqdm
 import numpy as np
@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument("--model-name",
                         type=str,
                         required=True,
-                        help="[resnet18]")
+                        help="[resnet18, resnet50]")
     parser.add_argument("--data-root",
                         type=str,
                         help="Root dir of ImageNet Dataset")
@@ -113,9 +113,12 @@ def main():
         
     # original model
     if args.model_name == 'resnet18':
-        weights = ResNet18_Weights.verify(ResNet18_Weights.IMAGENET1K_V1)
-        model = ResNet18Quant(num_classes=len(weights.meta["categories"]))
-        model.load_state_dict(weights.get_state_dict(progress=True))
+        # weights = ResNet18_Weights.verify(ResNet18_Weights.IMAGENET1K_V1)
+        # model = ResNet18Quant(num_classes=len(weights.meta["categories"]))
+        # model.load_state_dict(weights.get_state_dict(progress=True))
+        model = resnet18(pretrained=True)
+    elif args.model_name == 'resnet50':
+        model = resnet50(pretrained=True)
     else:
         raise ValueError(f"Unrecognized model name: {args.model_name}")
     model = model.to(device)

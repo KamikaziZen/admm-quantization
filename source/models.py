@@ -93,6 +93,26 @@ def build_cpfc_layer(rank, factors, bias, fin, fout):
             seq.fc2.bias = nn.Parameter(bias, requires_grad=True)
 
     return seq
+
+
+def build_svd_layer(rank, U, Vh, bias, fin, fout):
+    seq = nn.Sequential(OrderedDict([
+      ('vh', nn.Linear(in_features=fin, out_features=rank, bias=False)),
+      ('u', nn.Linear(in_features=rank, out_features=fout, bias=True if bias is not None else False)),
+    ]))
+
+    # fc weight is transposed
+    assert seq.u.weight.data.shape == U.shape, f'Expected shape: {seq.u.weight.data.shape}, but got {U.shape}'
+    assert seq.vh.weight.data.shape == Vh.shape, f'Expected shape: {seq.vh.weight.data.shape}, but got {Vh.shape}'
+    if bias is not None:
+        assert seq.u.bias.data.shape == bias.shape, f'Expected shape: {seq.u.bias.data.shape}, but got {bias.shape}'
+    with torch.no_grad():
+        seq.u.weight = nn.Parameter(U, requires_grad=True)
+        seq.vh.weight = nn.Parameter(Vh, requires_grad=True)
+        if bias is not None:
+            seq.u.bias = nn.Parameter(bias, requires_grad=True)
+
+    return seq
     
     
 def conv3x3(in_planes: int, out_planes: int, stride: int = 1, groups: int = 1, dilation: int = 1) -> nn.Conv2d:
@@ -224,6 +244,22 @@ class BasicBlockQuant(nn.Module):
 class ResNet18Quant(ResNet):
     def __init__(self, **kwargs: Any):
         super().__init__(BasicBlockQuant, [2, 2, 2, 2], **kwargs)
+        # Quantize stub module, before calibration, this is same as an observer
+        # We only use it to attach an activations observer and converter
+        self.quant = torch.quantization.QuantStub()
+        self.dequant = torch.quantization.DeQuantStub()
+
+    def forward(self, x):
+        x = self.quant(x)
+        y = super().forward(x)
+        y = self.dequant(y)
+
+        return y
+    
+    
+class ResNet50Quant(ResNet):
+    def __init__(self, **kwargs: Any):
+        super().__init__(BasicBlockQuant, [3, 4, 6, 3], **kwargs)
         # Quantize stub module, before calibration, this is same as an observer
         # We only use it to attach an activations observer and converter
         self.quant = torch.quantization.QuantStub()

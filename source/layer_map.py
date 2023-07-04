@@ -2,6 +2,11 @@ def get_layer_list(model_name, **kwargs):
     
     layer_list = []
     
+    if model_name == 'unet':
+        layer_list.extend(f'encoder{i}.enc{i}conv{j}' for i in range(1, 5) for j in range(1, 3))
+        layer_list.extend(f'bottleneck.bottleneckconv{j}' for j in range(1, 3))
+        layer_list.extend(f'decoder{i}.dec{i}conv{j}' for i in range(1, 5) for j in range(1, 3))
+    
     if model_name == 'resnet18':
         for module in ['layer1', 'layer2', 'layer3', 'layer4']:
             layer_list.extend([f'{module}.0.conv1', f'{module}.0.conv2', 
@@ -15,6 +20,22 @@ def get_layer_list(model_name, **kwargs):
             
         if kwargs.get('fc'):
             layer_list.append('fc')
+            
+    elif model_name == 'resnet50':
+        jmap = {
+            1: 3,
+            2: 4,
+            3: 6, 
+            4: 3
+        }
+        layer_list = [f'layer{i}.{j}.conv{k}' for i in range(1, 5) for j in range(jmap[i]) for k in range(1,4)]
+        
+    elif model_name == 'deit':
+        for i in range(12):
+            layer_list.extend([f'blocks.{i}.attn.qkv',
+                               f'blocks.{i}.attn.proj',
+                               f'blocks.{i}.mlp.fc1',
+                               f'blocks.{i}.mlp.fc2'])
                 
     elif model_name == 'regnet_y_3_2gf':
         jmap = {

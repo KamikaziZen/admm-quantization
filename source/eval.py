@@ -5,6 +5,23 @@ from torch.autograd import Variable
 from tqdm import tqdm
 
 
+# class DiceLoss(nn.Module):
+
+#     def __init__(self):
+#         super(DiceLoss, self).__init__()
+#         self.smooth = 1.0
+
+#     def forward(self, y_pred, y_true):
+#         assert y_pred.size() == y_true.size()
+#         y_pred = y_pred[:, 0].contiguous().view(-1)
+#         y_true = y_true[:, 0].contiguous().view(-1)
+#         intersection = (y_pred * y_true).sum()
+#         dsc = (2. * intersection + self.smooth) / (
+#             y_pred.sum() + y_true.sum() + self.smooth
+#         )
+#         return 1. - dsc
+
+
 def accuracy(model, dataset_loader, device='cuda', num_classes=1000):
     def one_hot(x, K):
         return np.array(x[:, None] == np.arange(K)[None, :], dtype=int)

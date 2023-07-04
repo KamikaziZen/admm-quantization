@@ -145,6 +145,11 @@ def main():
         model = resnet34(pretrained=True)
     elif args.model_name == 'resnet50':
         model = resnet50(pretrained=True)
+    elif args.model_name == 'deit':
+        model = torch.hub.load('facebookresearch/deit:main', 'deit_base_patch16_224', pretrained=True)
+    elif args.model_name == 'unet':
+        model = model = torch.hub.load('mateuszbuda/brain-segmentation-pytorch', 'unet',
+    in_channels=3, out_channels=1, init_features=32, pretrained=True)
     else:
         raise ValueError('Unrecognized model name')
     model = model.to(device)

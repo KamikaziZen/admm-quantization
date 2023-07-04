@@ -8,9 +8,8 @@ wandb/*
 notebooks/*
 ?bit*
 adaround/*
-checkpoints*
 notebooks/adaround*
-checkpoints/
+checkpoints/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

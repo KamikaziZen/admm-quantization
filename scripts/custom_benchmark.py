@@ -2,7 +2,7 @@ from flopco import FlopCo
 
 import torch
 from torch import nn
-from torchvision.models import ResNet18_Weights
+# from torchvision.models import ResNet18_Weights, ResNet50_Weights
 
 from tqdm import tqdm
 import numpy as np
@@ -14,7 +14,7 @@ from flopco import FlopCo
 
 from source.data import get_imagenet_test_loader, get_imagenet_train_val_loaders
 from source.eval import accuracy, accuracy_top1top5
-from source.models import build_cp_layer, ResNet18Quant
+from source.models import build_cp_layer, ResNet18Quant, ResNet50Quant
 from source.utils import bncalibrate_model
 from source.rank_map import get_rank_map
 from source.quantization import quantize_tensor, duplicate_resnet_factorized_with_quant
@@ -129,11 +129,17 @@ def main():
     if args.model_path is not None:
         model = torch.load(args.model_path)
     elif args.model_name == 'resnet18':
-        
-        # randomly initialized model
-        weights = ResNet18_Weights.verify(ResNet18_Weights.IMAGENET1K_V1)
-        model = ResNet18Quant(num_classes=len(weights.meta["categories"]))
-        model.load_state_dict(weights.get_state_dict(progress=True))
+        raise NotImplementedError
+        # model = resnet18(pretrained=False)
+        # model = ResNet18Quant(num_classes=len(weights.meta["categories"]))
+        # model.load_state_dict(weights.get_state_dict(progress=True))
+    elif args.model_name == 'resnet50':
+        # model = resnet50(pretrained=False)
+        # weights = .state_dict()
+        # weights = ResNet50_Weights.verify(ResNet50_Weights.IMAGENET1K_V1)
+        # model = ResNet50Quant(num_classes=len(weights.meta["categories"]))
+        # model.load_state_dict(weights.get_state_dict(progress=True))
+        raise NotImplementedError
     else:
         raise ValueError('Unrecognized model name')
     model = model.to(device)

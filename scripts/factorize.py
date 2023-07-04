@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torchvision.models import resnet18
+from torchvision.models import resnet18, resnet50
 import numpy as np
 from tensorly.decomposition import parafac
 import tensorly as tl
@@ -40,7 +40,7 @@ def parse_args():
     parser.add_argument("--model-name",
                         type=str,
                         required=True,
-                        help="[resnet18]")
+                        help="[resnet18, resnet50, unet]")
     parser.add_argument("--with-wandb",
                         action="store_true",
                         help="Whether to enable experiment logging to wandb.")
@@ -115,27 +115,36 @@ def main():
     # load original unfactorized model
     if args.model_name == 'resnet18':
         model = resnet18(pretrained=True)
+    elif args.model_name == 'resnet50':
+        model = resnet50(pretrained=True)
+    elif args.model_name == 'deit':
+        state_dict = torch.load('deit.sd')
+    elif args.model_name == 'unet':
+        model = torch.hub.load('mateuszbuda/brain-segmentation-pytorch', 'unet',
+    in_channels=3, out_channels=1, init_features=32, pretrained=True)
     else:
         raise ValueError(f"unrecognized model name: {args.model_name}")
-    model.eval()
+    # model.eval()
     
     # get weight tensor
-    layer = model 
-    for attr in args.layer.split('.'):
-        layer = layer.__getattr__(attr)
-    weight = layer.weight.detach().to(device)
-    bias = layer.bias
-    kernel_size = layer.kernel_size
-    groups = layer.groups
+    # layer = model 
+    # for attr in args.layer.split('.'):
+    #     layer = layer.__getattr__(attr)
+    # weight = layer.weight.detach().to(device)
+    # bias = layer.bias
+    weight = state_dict[args.layer+'.weight']
+    bias = state_dict.get(args.layer+'.bias')
+    # kernel_size = layer.kernel_size
+    # groups = layer.groups
     if bias is not None: bias = bias.detach().to(device)
-    if isinstance(layer, nn.Conv2d):
-        # kernel_size == (1,1) => equivalent to a Linear layer
-        if kernel_size == (1, 1):
-            weight = weight.reshape((weight.shape[0], weight.shape[1]))
-        else:
-            weight = weight.reshape((weight.shape[0], weight.shape[1], -1))
-    else:
-        raise NotImplementedError(layer)
+    # if isinstance(layer, nn.Conv2d):
+    #     # kernel_size == (1,1) => equivalent to a Linear layer
+    #     if kernel_size == (1, 1):
+    #         weight = weight.reshape((weight.shape[0], weight.shape[1]))
+    #     else:
+    #         weight = weight.reshape((weight.shape[0], weight.shape[1], -1))
+    # else:
+    #     raise NotImplementedError(layer)
         
     if weight.ndim == 3:
         ein_op = 'ir,jr,kr->ijk'
@@ -147,9 +156,9 @@ def main():
     # if rank is not specified, compute it from reduction rate
     if args.rank is None:
         args.rank = int(weight.numel() / sum(list(weight.shape)) / args.reduction_rate)
-        if groups != 1: 
-            while args.rank % groups != 0:
-                args.rank += 1
+        # if groups != 1: 
+        #     while args.rank % groups != 0:
+        #         args.rank += 1
             
     # create output dir to store factors
     outdir = f'{args.bits}bit_{args.qscheme}/factors_{args.method}_seed{args.seed}'

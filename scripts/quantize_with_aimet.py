@@ -166,7 +166,7 @@ def main():
         
     # calibrated model
     model_name = run_name(args).split('_w=')[0]
-    model = torch.load('checkpoints_stas/'+model_name)
+    model = torch.load('checkpoints/'+model_name)
     model = model.to(device)
     model.eval()
     
