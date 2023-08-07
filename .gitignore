@@ -10,6 +10,7 @@ notebooks/*
 adaround/*
 notebooks/adaround*
 checkpoints/*
+output*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
